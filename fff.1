@@ -58,6 +58,7 @@ B: mark all for bulk rename
 
 p: paste/move/delete/bulk_rename
 c: clear file selections
+z: toggle show file size mode
 
 [1-9]: favourites/bookmarks (see customization)
 
@@ -117,6 +118,10 @@ export FFF_TRASH=~/.local/share/fff/trash
 #          The program will be passed the list of selected files
 #          and directories.
 export FFF_TRASH_CMD="mv"
+
+# Show file size by default. May be toggled by FFF_KEY_FSIZE key later
+# Default: 1
+FFF_SHOW_FSIZE=1
 
 # Favourites (Bookmarks) (keys 1-9) (dir or file)
 export FFF_FAV1=~/projects
@@ -179,9 +184,15 @@ export FFF_KEY_SHELL="!"
 export FFF_KEY_SCROLL_DOWN1="j"
 export FFF_KEY_SCROLL_DOWN2=$'\e[B' # Down Arrow
 
+# Page down.
+export FFF_KEY_PAGE_DOWN1="6" # PgDn key
+
 # Scroll up.
 export FFF_KEY_SCROLL_UP1="k"
 export FFF_KEY_SCROLL_UP2=$'\e[A'   # Up Arrow
+
+# Page up
+export FFF_KEY_PAGE_UP1="5" # PgUp key
 
 # Go to top and bottom.
 export FFF_KEY_TO_TOP="g"
@@ -189,7 +200,7 @@ export FFF_KEY_TO_BOTTOM="G"
 
 # Go to dirs.
 export FFF_KEY_GO_DIR=":"
-export FFF_KEY_GO_HOME="~"
+export FFF_KEY_GO_HOME="1" # Home key
 export FFF_KEY_GO_TRASH="t"
 
 ### File operations.
@@ -220,6 +231,9 @@ export FFF_KEY_ATTRIBUTES="x"
 
 # Toggle hidden files.
 export FFF_KEY_HIDDEN="."
+
+# Toggle show file size mode
+export FFF_KEY_FSIZE="z"
 
 .
 .fi

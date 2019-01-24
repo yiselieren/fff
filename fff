@@ -92,6 +92,7 @@ get_term_size() {
 
     # Max list items that fit in the scroll area.
     ((max_items=LINES-3))
+    ((scroll_page=max_items-5))
 }
 
 get_ls_colors() {
@@ -188,29 +189,74 @@ status_line() {
 
 read_dir() {
     # Read a directory to an array and sort it directories first.
-    local dirs
-    local files
+    local dirs=()
+    local files=()
+    local mode
+    local size
+    local name
+    local flens
     local item_index
 
     # If '$PWD' is '/', unset it to avoid '//'.
     [[ $PWD == / ]] && PWD=
 
-    for item in "$PWD"/*; do
-        if [[ -d $item ]]; then
-            dirs+=("$item")
+    max_len=1
+    while read dr
+    do
+        # shellcheck disable=SC2086
+        set -- $dr
+
+        # Do not proceed first line "total ...."
+        if [[ $# -lt 9 ]]; then
+            continue
+        fi
+
+        # Parse ls output
+        mode=$1
+        size=$5
+        shift 8
+        name="$*"
+
+        # Do not proceed special names
+        if [[ "$name" == "." || "$name" == ".." ]]; then
+            continue
+        fi
+
+        # Maximal item length calculation
+        if [[ "${#name}" -gt $max_len ]]; then
+            max_len=${#name}
+        fi
+
+        if [[ "$mode" == d* ]]; then
+            dirs+=("$PWD/$name")
             ((item_index++))
 
             # Find the position of the child directory in the
             # parent directory list.
-            [[ $item == "$OLDPWD" ]] &&
+            [[ "$PWD/$name" == "$previous_dir" ]] &&
                 ((previous_index=item_index))
         else
-            files+=("$item")
+            files+=("$PWD/$name")
+            flens+=($size)
         fi
-    done
+    done < <(LC_COLLATE=C ls -l"${ls_opts}" --indicator-style=none "$PWD")
 
+    # Maximal item length calculation. Shouldn't be greater that COLUMNS
+    ((max_len+=2))
+    if ((max_len >= COLUMNS-6)); then
+        ((max_len=COLUMNS-6))
+    fi
+
+    # Resulting list
     list=("${dirs[@]}" "${files[@]}")
+    ((dirs_total=${#dirs[@]}))
 
+    lens=()
+    for ((i=0; i<dirs_total; i++))
+    do
+        lens+=(-1)
+    done
+    lens+=(${flens[@]})
     # Indicate that the directory is empty.
     [[ -z ${list[0]} ]] &&
         list[0]="empty"
@@ -221,9 +267,56 @@ read_dir() {
     cur_list=("${list[@]}")
 }
 
+# Show file size in a human readable format, only for a regular files
+# Result in hr_size variable
+human_readable_size() {
+    local f="$1"
+    local ls_output
+    local s
+    hr_size=""
+    if [[ ! -L $f && -f $f ]]; then
+        read -a ls_output <<< $(ls -ld "$f")
+        s=${ls_output[4]}
+
+        if ((s < 1024)); then
+            hr_size="$s\\e[33m"
+        elif ((s < 1048576)); then
+            hr_size="$((s / 1024))\\e[32mK"
+        elif ((s < 1048576 * 1024)); then
+            hr_size="$((s / 1048576))\\e[32mM"
+        elif ((s < 1048576 * 1048576)); then
+            hr_size="$((s / (1048576 * 1024)))\\e[32mG"
+        else
+            hr_size="$s"
+        fi
+        hr_size="\\e[33m${hr_size}"
+    fi
+}
+
+# Show file size in a human readable format, only for a regular files
+# Result in hr_size variable
+human_readable() {
+    local s="$1"
+    hr_size=""
+    if ((s < 1024)); then
+        hr_size="$s\\e[33m"
+    elif ((s < 1048576)); then
+        hr_size="$((s / 1024))\\e[32mK"
+    elif ((s < 1048576 * 1024)); then
+        hr_size="$((s / 1048576))\\e[32mM"
+    elif ((s < 1048576 * 1048576)); then
+        hr_size="$((s / (1048576 * 1024)))\\e[32mG"
+    else
+        hr_size="$s"
+    fi
+    hr_size="\\e[33m${hr_size}"
+}
+
+
 print_line() {
     # Format the list item and print it.
     local file_name="${list[$1]##*/}"
+    local fsize="${lens[$1]}"
     local file_ext="${file_name##*.}"
     local format
     local suffix
@@ -301,9 +394,23 @@ print_line() {
     # Remove all non-printable characters.
     file_name="${file_name//[^[:print:]]/^[}"
 
-    printf '\r%b%s\e[m\r' \
-        "${file_pre}${format}" \
-        "${file_name}${suffix}${file_post}"
+    if ((details > 0 && fsize >= 0 && ${#file_name}+${#suffix} < COLUMNS-6)); then
+        human_readable "$fsize"
+        if ((max_len - ${#file_name} > 0)); then
+            printf '\r%b%s%*s%b\e[m\r' \
+                   "${file_pre}${format}" \
+                   "${file_name}${suffix}${file_post}" \
+                   "$((max_len - ${#file_name}))" " " "$hr_size"
+        else
+            printf '\r%b%s%b\e[m\r' \
+                   "${file_pre}${format}" \
+                   "${file_name}${suffix}${file_post}" "$hr_size"
+        fi
+    else
+        printf '\r%b%s\e[m\r' \
+               "${file_pre}${format}" \
+               "${file_name}${suffix}${file_post}"
+    fi
 }
 
 draw_dir() {
@@ -738,6 +845,12 @@ key() {
     }
 
     case "${special_key:-$1}" in
+        # toggle details mode
+        "${FFF_KEY_FSIZE1:=z}")
+            details=$((-details))
+            redraw
+        ;;
+
         # Open list item.
         # 'C' is what bash sees when the right arrow is pressed
         # ('\e[C' or '\eOC').
@@ -768,6 +881,42 @@ key() {
                 find_previous=1
                 open "${PWD%/*}"
             fi
+        ;;
+
+        # Page up
+        "${FFF_KEY_PAGE_DOWN1:=6}"|\
+        "${FFF_KEY_PAGE_DOWN2:=$'\e[6'}")
+            for ((ii=0; ii<scroll_page; ii++)) do
+                ((scroll >= list_total)) && break
+                ((scroll++))
+                ((y < max_items )) && ((y++))
+
+                print_line "$((scroll-1))"
+                printf '\n'
+                print_line "$scroll"
+                status_line
+            done
+        ;;
+
+        # Page down
+        "${FFF_KEY_PAGE_UP1:=5}"|\
+        "${FFF_KEY_PAGE_UP2:=$'\e[5'}")
+            for ((ii=0; ii<scroll_page; ii++)) do
+                ((scroll <= 0)) && break
+                ((scroll--))
+
+                print_line "$((scroll+1))"
+
+                if ((y < 2)); then
+                    printf '\e[1L'
+                else
+                    printf '\e[A'
+                    ((y--))
+                fi
+
+                print_line "$scroll"
+                status_line
+            done
         ;;
 
         # Scroll down.
@@ -830,13 +979,14 @@ key() {
 
         # Show hidden files.
         "${FFF_KEY_HIDDEN:=.}")
-            # 'a=a>0?0:++a': Toggle between both values of 'shopt_flags'.
-            #                This also works for '3' or more values with
-            #                some modification.
-            shopt_flags=(u s)
-            shopt -"${shopt_flags[((a=${a:=$FFF_HIDDEN}>0?0:++a))]}" dotglob
+            ((hidden=-hidden))
+            if ((hidden > 0)); then
+                ls_opts=""
+            else
+                ls_opts="a"
+            fi
             redraw full
-        ;;
+       ;;
 
         # Search.
         "${FFF_KEY_SEARCH:=/}")
@@ -997,7 +1147,8 @@ key() {
         ;;
 
         # Go to '$HOME'.
-        "${FFF_KEY_GO_HOME:=~}")
+        "${FFF_KEY_GO_HOME:=1}"|\
+        "${FFF_KEY_HOME2:=$'\e[1'}")
             open ~
         ;;
 
@@ -1098,6 +1249,15 @@ main() {
     get_w3m_path
     setup_options
     setup_terminal
+
+    # Show file size mode
+    FFF_SHOW_FSIZE=${FFF_SHOW_FSIZE:=1}
+    details=$((FFF_SHOW_FSIZE>0?1:-1))
+
+    # Show hidden files
+    hidden=-1
+    ls_opts="a"
+
     redraw full
 
     # Vintage infinite loop.
